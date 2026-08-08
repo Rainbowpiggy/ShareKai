@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useMemo } from "react";
 import {
   Menu, X, Search, Apple, Egg, Wheat, Fish, Cookie, Package, Milk,
@@ -5,7 +7,9 @@ import {
   Check, AlertTriangle, Clock, Leaf, Users, TrendingUp, Award,
   ShieldCheck, LogOut, User, ClipboardList, Sparkles, Send,
   ArrowLeft, Plus, Minus, Camera, FileDown, Settings, Newspaper,
-  CalendarDays, RefreshCw
+  CalendarDays, RefreshCw, MapPin, Timer, ThumbsUp, ThumbsDown,
+  Upload, ImageOff, ShieldAlert, Hourglass, CheckCircle2, MessageCircle,
+  ScanLine, Lock
 } from "lucide-react";
 
 /* ---------------------------------- tokens ---------------------------------- */
@@ -114,6 +118,29 @@ const pendingVolunteers = [
   { id: "v2", name: "Volunteer request — Y13" },
 ];
 
+/* ---------------------------------- AI scanning + chat mock data ---------------------------------- */
+const mockScanResults = [
+  { name: "Red Apples", qty: "3 items", weightEstimate: "approx. 400g", shelfLifeHours: 48, category: "Fruit", spoil: null },
+  { name: "Sliced Wholegrain Bread", qty: "1 loaf (approx. 10 slices)", weightEstimate: "approx. 650g", shelfLifeHours: 24, category: "Bread", spoil: null },
+  { name: "Bananas", qty: "4 items", weightEstimate: "approx. 480g", shelfLifeHours: 30, category: "Fruit", spoil: { level: "amber", note: "Slight bruising detected — still edible, but best collected soon." } },
+  { name: "Boiled Eggs", qty: "6 items", weightEstimate: "approx. 360g", shelfLifeHours: 72, category: "Breakfast food", spoil: null },
+  { name: "Strawberries", qty: "1 punnet (approx. 250g)", weightEstimate: "approx. 250g", shelfLifeHours: 12, category: "Fruit", spoil: { level: "red", note: "Mould detected on several berries — not safe for consumption." } },
+];
+
+const moderationRejections = [
+  "This image doesn't appear to show a food item.",
+  "This image couldn't be verified as safe, everyday food and has been flagged for review.",
+];
+
+const EXCHANGE_LOCATIONS = [
+  "Main Office Reception",
+  "Library Front Desk",
+  "Canteen Servery",
+  "Student Services Foyer",
+];
+
+const CHAT_TIME_SLOTS = ["12:30", "13:00", "13:15", "15:00", "15:15", "15:30"];
+
 const groupRequest = (text) => {
   const t = text.toLowerCase();
   if (/(cereal|breakfast|before class|toast)/.test(t)) return "Breakfast food";
@@ -193,13 +220,15 @@ function Button({ children, onClick, variant = "primary", full, style, disabled,
   );
 }
 
-function Card({ children, style, bg = "#fff" }) {
+function Card({ children, style, bg = "#fff", onClick }) {
   return (
     <div
+      onClick={onClick}
       style={{
         background: bg, borderRadius: 18, border: `1.5px solid ${C.creamDeep}`,
-        boxShadow: "0 2px 10px rgba(46,70,48,0.06)", ...style,
+        boxShadow: "0 2px 10px rgba(46,70,48,0.06)", cursor: onClick ? "pointer" : undefined, ...style,
       }}
+      className={onClick ? "active:scale-[0.99]" : undefined}
     >
       {children}
     </div>
@@ -229,6 +258,8 @@ export default function ShareKAI() {
   const [notifPrefs, setNotifPrefs] = useState({ enabled: true });
   const [volunteers, setVolunteers] = useState(pendingVolunteers);
   const [referred, setReferred] = useState([]);
+  const [chatItem, setChatItem] = useState(null);
+  const [reservation, setReservation] = useState(null);
 
   const showToast = (msg, kind = "success") => {
     setToast({ msg, kind });
@@ -294,6 +325,33 @@ export default function ShareKAI() {
   const referItem = (draft) => {
     setReferred((r) => [...r, { ...draft, id: uid() }]);
     showToast("Referred to Teacher Coordinator for review.");
+  };
+
+  const openChat = (item) => {
+    if (!session) { goto("login"); return; }
+    if (item.status === "Out of Stock" || item.status === "Reserved") {
+      showToast("This item is no longer available to reserve.", "error");
+      return;
+    }
+    setChatItem(item);
+    goto("chat");
+  };
+
+  const confirmReservation = ({ item, location, date, time }) => {
+    setReservation({ item, location, date, time, code: session.code, confirmedAt: "Just now" });
+    updateItem(item.id, { status: "Reserved", qty: Math.max(0, item.qty - 1) });
+    addLog(`${item.name} was reserved for pickup at ${location}.`, "rescue");
+    showToast("Reservation confirmed!");
+    setChatItem(null);
+    goto("tracker");
+  };
+
+  const completePickup = (auto = false) => {
+    if (!reservation) return;
+    addLog(`${reservation.item.name} was collected from ${reservation.location}.`, "rescue");
+    showToast(auto ? "Pickup window ended — reservation closed." : "Marked as collected. Thanks!");
+    setReservation(null);
+    goto("pantry");
   };
 
   /* ---------------------------------- shared shell ---------------------------------- */
@@ -384,6 +442,8 @@ export default function ShareKAI() {
           <Item label="Live Pantry" onClick={() => goto("pantry")} icon={Package} />
           <Item label="Community Log" onClick={() => goto("communitylog")} icon={Newspaper} />
           <Item label="Make a Request" onClick={() => goto("request")} icon={Send} />
+          {session && <Item label="Scan a Food Item" onClick={() => goto("scan")} icon={Camera} />}
+          {reservation && <Item label="Active Reservation" onClick={() => goto("tracker")} icon={Timer} />}
           <Item label="Achievements" onClick={() => goto("achievements")} icon={Award} />
           {session && <Item label="Personal Contribution" onClick={() => goto("personal")} icon={Sparkles} />}
           <Item label="This Week" onClick={() => goto("week")} icon={CalendarDays} />
@@ -465,7 +525,20 @@ export default function ShareKAI() {
 
     return (
       <div>
-        <SectionTitle sub="Food currently available near the canteen. First come, first served — nothing here can be reserved.">Live Pantry</SectionTitle>
+        <SectionTitle sub="Food currently available near the canteen. Tap an item to start a reservation chat.">Live Pantry</SectionTitle>
+
+        {session && (
+          <button
+            onClick={() => goto("scan")}
+            className="w-full flex items-center justify-between mb-3 px-3.5 py-2.5 rounded-xl"
+            style={{ background: C.forest, color: C.paper, border: "none" }}
+          >
+            <span className="flex items-center gap-2" style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 13.5 }}>
+              <Camera size={16} style={{ color: C.gold }} /> Got food to share? Scan it with AI
+            </span>
+            <ChevronRight size={16} />
+          </button>
+        )}
 
         <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-xl" style={{ background: "#fff", border: `1.5px solid ${C.creamDeep}` }}>
           <Search size={16} style={{ color: C.forestSoft }} />
@@ -500,8 +573,9 @@ export default function ShareKAI() {
         <div className="grid sm:grid-cols-2 gap-3">
           {filtered.map((item) => {
             const Icon = iconFor(item.name);
+            const unavailable = item.status === "Out of Stock" || item.status === "Reserved";
             return (
-              <Card key={item.id} bg={C.sageLight} style={{ padding: 14, borderRadius: 20 }}>
+              <Card key={item.id} bg={C.sageLight} style={{ padding: 14, borderRadius: 20, opacity: unavailable ? 0.75 : 1 }} onClick={() => openChat(item)}>
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-2">
                     <div style={{ background: "#fff", borderRadius: 999, padding: 8 }}>
@@ -512,11 +586,12 @@ export default function ShareKAI() {
                       <p style={{ fontFamily: FONT_BODY, fontSize: 12, color: C.forestSoft }}>~{item.qty} {item.unit} · {item.category}</p>
                     </div>
                   </div>
+                  <ChevronRight size={16} style={{ color: C.forestSoft, flexShrink: 0, marginTop: 4 }} />
                 </div>
                 <div className="flex flex-wrap gap-1.5 mt-2.5">
                   <Pill bg="#fff">{item.perishable ? "Perishable" : "Non-perishable"}</Pill>
                   <Pill bg="#fff">{item.type}</Pill>
-                  <Pill bg={item.status === "Out of Stock" ? C.red : item.status === "Low Stock" ? C.amber : C.green} fg="#fff">{item.status}</Pill>
+                  <Pill bg={item.status === "Out of Stock" ? C.red : item.status === "Low Stock" ? C.amber : item.status === "Reserved" ? C.blueDeep : C.green} fg="#fff">{item.status}</Pill>
                 </div>
                 {item.allergens.length > 0 && (
                   <p style={{ fontFamily: FONT_BODY, fontSize: 11, color: C.red, marginTop: 6 }}>Contains: {item.allergens.join(", ")}</p>
@@ -528,6 +603,11 @@ export default function ShareKAI() {
                   <UrgencyDot level={item.urgency} />
                   <span style={{ fontFamily: FONT_BODY, fontSize: 10.5, color: C.forestSoft }}>Checked {item.lastChecked}</span>
                 </div>
+                {!unavailable && (
+                  <p className="flex items-center gap-1 mt-2.5" style={{ fontFamily: FONT_BODY, fontSize: 11, fontWeight: 700, color: C.forestSoft }}>
+                    <MessageCircle size={12} /> Tap to reserve &amp; chat
+                  </p>
+                )}
               </Card>
             );
           })}
@@ -1104,6 +1184,457 @@ export default function ShareKAI() {
     );
   }
 
+  /* ---------------------------------- PAGE: photo analysis (AI scanning engine) ---------------------------------- */
+  function PhotoAnalysisPage() {
+    if (!session) return <LoginGate />;
+    const canEdit = session.role === "volunteer" || session.role === "teacher";
+    const [preview, setPreview] = useState(null);
+    const [fileName, setFileName] = useState("");
+    const [scanning, setScanning] = useState(false);
+    const [scanResult, setScanResult] = useState(null);
+    const [desc, setDesc] = useState("");
+
+    const resetScan = () => { setPreview(null); setFileName(""); setScanResult(null); setDesc(""); };
+
+    const handleFile = (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      resetScan();
+      setFileName(file.name);
+      setPreview(URL.createObjectURL(file));
+    };
+
+    const runAiScan = () => {
+      setScanning(true);
+      setScanResult(null);
+      setTimeout(() => {
+        const flagged = Math.random() < 0.12;
+        if (flagged) {
+          setScanResult({ flagged: true, reason: moderationRejections[Math.floor(Math.random() * moderationRejections.length)] });
+        } else {
+          const pick = mockScanResults[Math.floor(Math.random() * mockScanResults.length)];
+          const desc = `${pick.name} — ${pick.qty}, ${pick.weightEstimate}. Estimated safe window: ~${pick.shelfLifeHours} hours.${pick.spoil ? " " + pick.spoil.note : ""}`;
+          setScanResult({ flagged: false, ...pick, description: desc });
+          setDesc(desc);
+        }
+        setScanning(false);
+      }, 1300);
+    };
+
+    const unsafe = scanResult && !scanResult.flagged && scanResult.spoil?.level === "red";
+
+    const publishItem = () => {
+      addIntakeItem({
+        name: scanResult.name, qty: parseInt(scanResult.qty, 10) || 1, unit: "items",
+        category: scanResult.category, perishable: true, type: "Rescued Surplus",
+        deadline: `Safe for ~${scanResult.shelfLifeHours} hours`, allergens: [],
+        status: "Available", urgency: scanResult.spoil?.level || "green", weightKg: 0.3,
+        source: "AI-scanned donation", storageLocation: "Pantry", receivedAt: "Just now",
+      });
+      resetScan();
+    };
+
+    const submitForReview = () => {
+      referItem({
+        name: scanResult.name, qty: parseInt(scanResult.qty, 10) || 1, unit: "items",
+        category: scanResult.category, perishable: true, type: "Rescued Surplus",
+        useBy: `Safe for ~${scanResult.shelfLifeHours} hours`, weightKg: 0.3,
+        source: "AI-scanned donation (student submitted)", storage: "Pantry",
+      });
+      resetScan();
+    };
+
+    const logAsWaste = () => {
+      addLog(`${scanResult.name} was flagged unsafe by AI scan and composted instead of published.`, "rescue");
+      showToast("Logged as waste — not published to the pantry.");
+      resetScan();
+    };
+
+    return (
+      <div>
+        <SectionTitle sub="Capture or upload a photo and AI will identify the item, estimate quantity and shelf life.">Photo Analysis</SectionTitle>
+
+        <Card style={{ padding: 16, marginBottom: 14 }}>
+          {preview ? (
+            <div className="flex flex-col items-center">
+              <img src={preview} alt={fileName} style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 14, marginBottom: 10 }} />
+              <p style={{ fontFamily: FONT_BODY, fontSize: 11.5, color: C.forestSoft, marginBottom: 10 }}>{fileName}</p>
+              <div className="flex gap-2 w-full">
+                <Button full variant="outline" onClick={resetScan}>Retake / choose another</Button>
+                {!scanResult && (
+                  <Button full disabled={scanning} onClick={runAiScan}>
+                    {scanning ? "Analyzing..." : <span className="flex items-center justify-center gap-2"><ScanLine size={15} /> Analyze photo</span>}
+                  </Button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center py-6 text-center">
+              <div style={{ background: C.sageLight, borderRadius: 999, padding: 16, marginBottom: 10 }}>
+                <Camera size={26} style={{ color: C.forest }} />
+              </div>
+              <p style={{ fontFamily: FONT_BODY, color: C.forestSoft, fontSize: 12.5, marginBottom: 14 }}>Take a clear photo of the food item, or upload one from your gallery.</p>
+              <div className="flex gap-2 w-full">
+                <label className="flex-1">
+                  <input type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} />
+                  <span style={{ ...selectStyle, width: "100%", padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: C.forest, color: C.paper, cursor: "pointer" }}>
+                    <Camera size={14} /> Take photo
+                  </span>
+                </label>
+                <label className="flex-1">
+                  <input type="file" accept="image/*" onChange={handleFile} style={{ display: "none" }} />
+                  <span style={{ ...selectStyle, width: "100%", padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, cursor: "pointer" }}>
+                    <Upload size={14} /> Upload photo
+                  </span>
+                </label>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        {scanning && (
+          <Card style={{ padding: 16, marginBottom: 14, textAlign: "center" }} bg={C.sageLight}>
+            <Sparkles size={20} style={{ color: C.forest, margin: "0 auto 6px" }} />
+            <p style={{ fontFamily: FONT_BODY, fontSize: 13, color: C.forest, fontWeight: 600 }}>AI vision is checking for food content, estimating quantity and shelf life...</p>
+          </Card>
+        )}
+
+        {scanResult?.flagged && (
+          <Card style={{ padding: 16, marginBottom: 14 }} bg={C.red}>
+            <p className="flex items-start gap-2" style={{ fontFamily: FONT_BODY, color: "#fff", fontWeight: 700, fontSize: 13.5, marginBottom: 4 }}>
+              <ImageOff size={17} style={{ flexShrink: 0, marginTop: 1 }} /> Upload rejected
+            </p>
+            <p style={{ fontFamily: FONT_BODY, color: "#fff", fontSize: 12.5 }}>{scanResult.reason} Please retake the photo, making sure the food item is clearly visible.</p>
+          </Card>
+        )}
+
+        {scanResult && !scanResult.flagged && (
+          <>
+            <Card style={{ padding: 16, marginBottom: 14 }}>
+              <p style={labelStyle}>AI analysis</p>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <Card style={{ padding: 10 }} bg={C.creamDeep}>
+                  <p style={{ fontFamily: FONT_BODY, fontSize: 10.5, color: C.forestSoft }}>Item identification</p>
+                  <p style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, color: C.forest, fontSize: 15 }}>{scanResult.name}</p>
+                </Card>
+                <Card style={{ padding: 10 }} bg={C.creamDeep}>
+                  <p style={{ fontFamily: FONT_BODY, fontSize: 10.5, color: C.forestSoft }}>Quantity estimate</p>
+                  <p style={{ fontFamily: FONT_BODY, fontWeight: 700, color: C.forest, fontSize: 13.5 }}>{scanResult.qty}</p>
+                  <p style={{ fontFamily: FONT_BODY, fontSize: 11, color: C.forestSoft }}>{scanResult.weightEstimate}</p>
+                </Card>
+              </div>
+              <div className="flex items-center gap-2 mb-2 p-2.5 rounded-xl" style={{ background: C.sageLight }}>
+                <Clock size={16} style={{ color: C.forest, flexShrink: 0 }} />
+                <span style={{ fontFamily: FONT_BODY, fontSize: 12.5, color: C.forest, fontWeight: 600 }}>Safe for ~{scanResult.shelfLifeHours} hours</span>
+              </div>
+              {scanResult.spoil ? (
+                <div className="flex items-start gap-2 p-2.5 rounded-xl" style={{ background: scanResult.spoil.level === "red" ? C.red : C.amber }}>
+                  <AlertTriangle size={16} style={{ color: "#fff", flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontFamily: FONT_BODY, fontSize: 12.5, color: "#fff", fontWeight: 600 }}>{scanResult.spoil.note}</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 p-2.5 rounded-xl" style={{ background: C.green }}>
+                  <CheckCircle2 size={16} style={{ color: "#fff", flexShrink: 0 }} />
+                  <span style={{ fontFamily: FONT_BODY, fontSize: 12.5, color: "#fff", fontWeight: 600 }}>No mould, bruising or decay detected.</span>
+                </div>
+              )}
+            </Card>
+
+            <Card style={{ padding: 16, marginBottom: 14 }}>
+              <div className="flex items-center justify-between mb-2">
+                <p style={{ ...labelStyle, marginBottom: 0 }}>Description</p>
+                {!canEdit && (
+                  <span className="flex items-center gap-1" style={{ fontFamily: FONT_BODY, fontSize: 10.5, color: C.forestSoft, fontWeight: 700 }}>
+                    <Lock size={11} /> Read-only
+                  </span>
+                )}
+              </div>
+              <textarea
+                value={desc}
+                onChange={(e) => canEdit && setDesc(e.target.value)}
+                readOnly={!canEdit}
+                rows={3}
+                style={{ ...selectStyle, width: "100%", padding: 10, resize: "none", background: canEdit ? "#fff" : C.creamDeep, color: C.forest }}
+              />
+              <p style={{ fontFamily: FONT_BODY, fontSize: 11, color: C.forestSoft, marginTop: 6 }}>
+                {canEdit
+                  ? "As Staff/Admin, you can edit or override any AI-generated value before publishing."
+                  : "Only authenticated Staff and Admin accounts can edit AI-generated values. Your scan will be sent for review before it's published."}
+              </p>
+            </Card>
+
+            {unsafe ? (
+              <Card style={{ padding: 14 }} bg={C.creamDeep}>
+                <p style={{ fontFamily: FONT_BODY, fontSize: 12.5, color: C.forest, marginBottom: 10 }}>This item has been flagged as unsafe for consumption and can't be published to the pantry.</p>
+                <Button full variant="danger" onClick={logAsWaste}>Log as waste / composted</Button>
+              </Card>
+            ) : canEdit ? (
+              <Button full onClick={publishItem}>Publish to Live Pantry</Button>
+            ) : (
+              <Button full onClick={submitForReview}>Submit for volunteer review</Button>
+            )}
+          </>
+        )}
+
+        <Card style={{ padding: 14, marginTop: 14, background: C.blue, border: "none" }}>
+          <p className="flex items-start gap-2" style={{ fontFamily: FONT_BODY, fontSize: 12, color: C.forest }}>
+            <ShieldAlert size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+            AI automatically checks every photo and rejects images that aren't food, or that appear inappropriate or suspicious.
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
+  /* ---------------------------------- PAGE: chat (structured reservation) ---------------------------------- */
+  function ChatBubble({ from, children }) {
+    const isAi = from === "ai";
+    return (
+      <div className={`flex ${isAi ? "justify-start" : "justify-end"} mb-2.5`}>
+        <div
+          style={{
+            maxWidth: "85%", padding: "10px 14px", borderRadius: isAi ? "4px 16px 16px 16px" : "16px 4px 16px 16px",
+            background: isAi ? C.sageLight : C.forest, color: isAi ? C.forest : C.paper,
+            fontFamily: FONT_BODY, fontSize: 13.5,
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    );
+  }
+
+  function ChatPage() {
+    if (!session) return <LoginGate />;
+    if (!chatItem) {
+      return (
+        <Card style={{ padding: 26, textAlign: "center" }}>
+          <MessageCircle size={26} style={{ color: C.forestSoft, margin: "0 auto 10px" }} />
+          <p style={{ fontFamily: FONT_BODY, color: C.forest, fontWeight: 700, marginBottom: 4 }}>No item selected</p>
+          <p style={{ fontFamily: FONT_BODY, color: C.forestSoft, fontSize: 13, marginBottom: 14 }}>Head back to the Live Pantry and tap an item to start a reservation chat.</p>
+          <Button onClick={() => goto("pantry")}>Go to Live Pantry</Button>
+        </Card>
+      );
+    }
+
+    const item = chatItem;
+    const [step, setStep] = useState(0);
+    const [location, setLocation] = useState(EXCHANGE_LOCATIONS[0]);
+    const [date, setDate] = useState("Today");
+    const [time, setTime] = useState(CHAT_TIME_SLOTS[0]);
+    const [cancelled, setCancelled] = useState(false);
+
+    if (cancelled) {
+      return (
+        <div>
+          <SectionTitle sub="Structured reservation chat.">Chat</SectionTitle>
+          <Card style={{ padding: 22, textAlign: "center" }}>
+            <ThumbsDown size={22} style={{ color: C.forestSoft, margin: "0 auto 10px" }} />
+            <p style={{ fontFamily: FONT_BODY, color: C.forest, fontWeight: 700, marginBottom: 4 }}>Reservation cancelled</p>
+            <p style={{ fontFamily: FONT_BODY, color: C.forestSoft, fontSize: 13, marginBottom: 14 }}>No problem — {item.name} stays in the Live Pantry for other students to collect.</p>
+            <Button onClick={() => { setChatItem(null); goto("pantry"); }}>Back to Live Pantry</Button>
+          </Card>
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <SectionTitle sub="A guided, template-only chat — no free text, so every exchange stays safe and predictable.">Reserve: {item.name}</SectionTitle>
+
+        <Card style={{ padding: 12, marginBottom: 14, background: C.blue, border: "none" }}>
+          <p className="flex items-start gap-2" style={{ fontFamily: FONT_BODY, fontSize: 11.5, color: C.forest }}>
+            <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            AI Chat Moderation: only the structured responses below are available. Custom free-text messaging is disabled.
+          </p>
+        </Card>
+
+        <div className="mb-3">
+          <ChatBubble from="ai">
+            Kia ora! Can you confirm this is the Kai you want: <strong>{item.name}</strong> (~{item.qty} {item.unit})?
+          </ChatBubble>
+          {step >= 1 && <ChatBubble from="user">Yes, that's the one.</ChatBubble>}
+        </div>
+
+        {step === 0 && (
+          <Card style={{ padding: 14 }}>
+            <div className="flex gap-2">
+              <Button full onClick={() => setStep(1)}><span className="flex items-center justify-center gap-1.5"><ThumbsUp size={14} /> Yes</span></Button>
+              <Button full variant="ghost" onClick={() => setCancelled(true)}><span className="flex items-center justify-center gap-1.5"><ThumbsDown size={14} /> No</span></Button>
+            </div>
+          </Card>
+        )}
+
+        {step >= 1 && (
+          <div className="mb-3">
+            <ChatBubble from="ai">Great — address request: which designated school exchange location works for pickup?</ChatBubble>
+            {step >= 2 && <ChatBubble from="user">{location}</ChatBubble>}
+          </div>
+        )}
+
+        {step === 1 && (
+          <Card style={{ padding: 14 }}>
+            <div className="flex flex-col gap-2 mb-3">
+              {EXCHANGE_LOCATIONS.map((loc) => (
+                <button
+                  key={loc}
+                  onClick={() => setLocation(loc)}
+                  className="flex items-center gap-2"
+                  style={{ ...selectStyle, width: "100%", padding: "9px 12px", justifyContent: "flex-start", background: location === loc ? C.gold : "#fff" }}
+                >
+                  <MapPin size={14} /> {loc}
+                </button>
+              ))}
+            </div>
+            <Button full onClick={() => setStep(2)}>Confirm location</Button>
+          </Card>
+        )}
+
+        {step >= 2 && (
+          <div className="mb-3">
+            <ChatBubble from="ai">Time request: what date and pickup time suit you?</ChatBubble>
+            {step >= 3 && <ChatBubble from="user">{date} at {time}</ChatBubble>}
+          </div>
+        )}
+
+        {step === 2 && (
+          <Card style={{ padding: 14 }}>
+            <p style={labelStyle}>Date</p>
+            <div className="flex gap-2 mb-3">
+              {["Today", "Tomorrow"].map((d) => (
+                <button key={d} onClick={() => setDate(d)} style={{ ...selectStyle, flex: 1, background: date === d ? C.gold : "#fff" }}>{d}</button>
+              ))}
+            </div>
+            <p style={labelStyle}>Pickup time</p>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {CHAT_TIME_SLOTS.map((t) => (
+                <button key={t} onClick={() => setTime(t)} style={{ ...selectStyle, background: time === t ? C.gold : "#fff" }}>{t}</button>
+              ))}
+            </div>
+            <Button full onClick={() => setStep(3)}>Confirm time</Button>
+          </Card>
+        )}
+
+        {step >= 3 && (
+          <div className="mb-3">
+            <ChatBubble from="ai">
+              Confirm reservation: <strong>{item.name}</strong> · {location} · {date} at {time}. Shall I confirm this reservation?
+            </ChatBubble>
+          </div>
+        )}
+
+        {step === 3 && (
+          <Card style={{ padding: 14 }}>
+            <div className="flex gap-2">
+              <Button full onClick={() => confirmReservation({ item, location, date, time })}>
+                <span className="flex items-center justify-center gap-1.5"><ThumbsUp size={14} /> Confirm reservation</span>
+              </Button>
+              <Button full variant="ghost" onClick={() => setCancelled(true)}>
+                <span className="flex items-center justify-center gap-1.5"><ThumbsDown size={14} /> No</span>
+              </Button>
+            </div>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  /* ---------------------------------- PAGE: review & tracker ---------------------------------- */
+  function TrackerPage() {
+    if (!session) return <LoginGate />;
+    if (!reservation) {
+      return (
+        <Card style={{ padding: 26, textAlign: "center" }}>
+          <Timer size={26} style={{ color: C.forestSoft, margin: "0 auto 10px" }} />
+          <p style={{ fontFamily: FONT_BODY, color: C.forest, fontWeight: 700, marginBottom: 4 }}>No active reservation</p>
+          <p style={{ fontFamily: FONT_BODY, color: C.forestSoft, fontSize: 13, marginBottom: 14 }}>Reserve an item from the Live Pantry to see its pickup tracker here.</p>
+          <Button onClick={() => goto("pantry")}>Go to Live Pantry</Button>
+        </Card>
+      );
+    }
+
+    const target = useMemo(() => {
+      const now = new Date();
+      const [h, m] = reservation.time.split(":").map(Number);
+      const t = new Date(now);
+      t.setHours(h, m, 0, 0);
+      if (reservation.date === "Tomorrow" || t < now) t.setDate(t.getDate() + (reservation.date === "Tomorrow" ? 1 : 1));
+      return t;
+    }, [reservation]);
+
+    const [remaining, setRemaining] = useState(target.getTime() - Date.now());
+
+    React.useEffect(() => {
+      const iv = setInterval(() => setRemaining(target.getTime() - Date.now()), 1000);
+      return () => clearInterval(iv);
+    }, [target]);
+
+    React.useEffect(() => {
+      if (remaining <= 0) {
+        const t = setTimeout(() => completePickup(true), 300);
+        return () => clearTimeout(t);
+      }
+    }, [remaining <= 0]);
+
+    const clamped = Math.max(0, remaining);
+    const hh = String(Math.floor(clamped / 3600000)).padStart(2, "0");
+    const mm = String(Math.floor((clamped % 3600000) / 60000)).padStart(2, "0");
+    const ss = String(Math.floor((clamped % 60000) / 1000)).padStart(2, "0");
+    const Icon = iconFor(reservation.item.name);
+
+    return (
+      <div>
+        <SectionTitle sub="Your reservation is confirmed — here's when and where to collect it.">Pickup Tracker</SectionTitle>
+
+        <Card style={{ padding: 18, marginBottom: 14, textAlign: "center" }} bg={C.forest}>
+          <p className="flex items-center justify-center gap-1.5" style={{ fontFamily: FONT_BODY, fontSize: 11.5, color: C.sageLight, fontWeight: 700, marginBottom: 6 }}>
+            <Hourglass size={13} /> Time until pickup
+          </p>
+          <p style={{ fontFamily: FONT_DISPLAY, fontSize: 40, fontWeight: 700, color: C.paper, letterSpacing: 1 }}>{hh}:{mm}:{ss}</p>
+        </Card>
+
+        <Card style={{ padding: 16, marginBottom: 12 }}>
+          <div className="flex items-center gap-3 mb-3">
+            <div style={{ background: C.sageLight, borderRadius: 999, padding: 10 }}>
+              <Icon size={22} style={{ color: C.forest }} />
+            </div>
+            <div>
+              <p style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, color: C.forest, fontSize: 17 }}>{reservation.item.name}</p>
+              <p style={{ fontFamily: FONT_BODY, fontSize: 12, color: C.forestSoft }}>Reserved under account code {reservation.code}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mb-2 p-2.5 rounded-xl" style={{ background: C.creamDeep }}>
+            <CalendarDays size={16} style={{ color: C.forest, flexShrink: 0 }} />
+            <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: C.forest, fontWeight: 600 }}>{reservation.date} at {reservation.time}</span>
+          </div>
+          <div
+            className="flex items-center gap-2 p-3 rounded-xl"
+            style={{
+              background: `repeating-linear-gradient(45deg, ${C.sageLight}, ${C.sageLight} 10px, ${C.creamDeep} 10px, ${C.creamDeep} 20px)`,
+            }}
+          >
+            <div style={{ background: "#fff", borderRadius: 999, padding: 8, flexShrink: 0 }}>
+              <MapPin size={18} style={{ color: C.red }} />
+            </div>
+            <div>
+              <p style={{ fontFamily: FONT_BODY, fontSize: 10.5, color: C.forest, fontWeight: 700 }}>Exchange location</p>
+              <p style={{ fontFamily: FONT_BODY, fontSize: 13.5, color: C.forest, fontWeight: 700 }}>{reservation.location}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Button full onClick={() => completePickup(false)}>Mark as collected</Button>
+
+        <Card style={{ padding: 14, marginTop: 12, background: C.blue, border: "none" }}>
+          <p className="flex items-start gap-2" style={{ fontFamily: FONT_BODY, fontSize: 12, color: C.forest }}>
+            <ShieldCheck size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+            When the countdown reaches zero, or once you mark this collected, you'll be returned to the Live Pantry automatically.
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
   /* ---------------------------------- router ---------------------------------- */
   if (page === "login" && !session) return <LoginPage />;
 
@@ -1119,6 +1650,9 @@ export default function ShareKAI() {
     case "month": body = <ReportsPage which="month" />; break;
     case "archive": body = <ReportsPage which="archive" />; break;
     case "notif": body = <NotifPage />; break;
+    case "scan": body = <PhotoAnalysisPage />; break;
+    case "chat": body = <ChatPage />; break;
+    case "tracker": body = <TrackerPage />; break;
     case "volunteer": body = <VolunteerDashboard />; break;
     case "teacher": body = <TeacherDashboard />; break;
     case "login": body = <LoginGate />; break;
